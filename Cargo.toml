@@ -1,0 +1,17 @@
+[package]
+name = "blog-rust-2"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+bwavfile = "1.1.0"
+hound="3.5.0"
+symphonia = { version ="0.5.1", features = ["mp3"] }
+
+reqwest = { version = "0.11", features = ["blocking", "json"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = { version = "1.0" }
+urlencoding = { version = "2.1" }
+libc = "0.2"
