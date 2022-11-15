@@ -1,8 +1,8 @@
 use serde::{Serialize};
 
-pub struct KeyFinderAudioData {
+#[macro_use(defer)]
+extern crate scopeguard;
 
-}
 
 pub struct KeyFinder {
     // TODO: state goes here
@@ -13,9 +13,28 @@ impl KeyFinder {
         KeyFinder {  }
     }
 
-    pub fn setFrameRate(&mut self, frame_rate:u32 ) {
+    pub fn set_frame_rate(&mut self, _frame_rate:u32 ) {
 
     }
+
+}
+
+// use a type alias so we can change this later for opaque struct
+type KeyFinderAudioDataPtr = *mut ::libc::c_void;
+
+extern "C" {
+
+    // intializer for the audio data
+    pub fn kfwrapper__init_audio_data(frame_rate: u32) -> KeyFinderAudioDataPtr;
+
+    // destructor for the audio data
+    pub fn kfwrapper__destroy_audio_data(audio_data: KeyFinderAudioDataPtr);
+
+    // add a number of samples to the audio data
+    pub fn kfwrapper__add_to_samples(audio_data: KeyFinderAudioDataPtr, data: *const f32, data_size: u64 );
+
+    // returns the current key of the audio data
+    pub fn kfwrapper__key_of_audio(audio_data: KeyFinderAudioDataPtr) -> i32;
 
 }
 
@@ -182,6 +201,8 @@ pub struct SongMeta {
 
 
 fn process_mp3_file(path: &str) -> Option<SongMeta> {
+
+
     use symphonia::core::codecs::{DecoderOptions, CODEC_TYPE_NULL};
     use symphonia::core::errors::Error;
     use symphonia::core::formats::FormatOptions;
@@ -220,6 +241,22 @@ fn process_mp3_file(path: &str) -> Option<SongMeta> {
         .find(|t| t.codec_params.codec != CODEC_TYPE_NULL)
         .expect("no supported audio tracks");
 
+    // find the sample rate
+    let sample_rate = match track.codec_params.sample_rate {
+        Some(rate) => rate,
+        None => {
+            panic!("Cannot find sample rate for track")
+        },
+    };
+
+    // create audio data from samplerate
+    let audio_data = unsafe { kfwrapper__init_audio_data(sample_rate) };
+    defer! {
+        unsafe { kfwrapper__destroy_audio_data(audio_data) }
+    }
+
+    print!("Sample rate: {}", sample_rate);
+
     // Use the default options for the decoder.
     let dec_opts: DecoderOptions = Default::default();
 
@@ -252,7 +289,7 @@ fn process_mp3_file(path: &str) -> Option<SongMeta> {
                 // for chained OGG physical streams.
                 unimplemented!();
             }
-            Err(err) => {
+            Err(_err) => {
                 // A unrecoverable error occured, halt decoding.
                 return Some(song_meta);
             }
@@ -287,17 +324,41 @@ fn process_mp3_file(path: &str) -> Option<SongMeta> {
                     AudioBufferRef::F32(buf) => {
                         let planes = buf.planes();
                         print!(".");
-
-                        for plane in planes.planes() {
-                            // TODO: We have the block of samples here one channel, send to libKeyfinder here
-                            for &_sample in plane.iter() {
-
-                                // Do something with `sample`.
-                            }
+                        // check if we have audio channels
+                        if planes.planes().len() == 0 {
+                            print!("No audio channles available");
+                            return None;
                         }
 
+                        // use the first channel only (as we are mono)
+                        let plane = planes.planes()[0];
+                        unsafe { kfwrapper__add_to_samples(
+                            audio_data,
+                            plane.as_ptr(),
+                            plane.len().try_into().unwrap()
+                        ) };
+
+
+
+
+                        // for plane in planes.planes() {
+                        //     unsafe { kfwrapper__add_to_samples(
+                        //         audio_data,
+                        //         plane.as_ptr(),
+                        //         plane.len().try_into().unwrap()
+                        //     ) }
+                            // // TODO: We have the block of samples here one channel, send to libKeyfinder here
+                            // for &_sample in plane.iter() {
+
+                            //     // Do something with `sample`.
+                            // }
+                        // }
+
                         // TODO: update the song key from the libkeyfinder instance
-                        let song_key = SongKey::Unknown;
+                        // let song_key = SongKey::Unknown;
+                        let int_song_key = unsafe { kfwrapper__key_of_audio(audio_data) };
+                        let song_key = SongKey::from_key_t(int_song_key);
+
 
                         song_meta.key = song_key;
                         song_meta.cof_key = song_key.to_circle_of_fifths();

@@ -367,11 +367,15 @@ KeyFinder::key_t key = k.keyOfAudio(a);
 
 Since `C++ <-> Rust` interop is not really safe, we'll have to interject a little C that wraps all these C++ calls.
 
-We need an that can take a memory block of audio data and return a key for it. To keep the code smaller we'll make it single-channel only.
+We need a function that can take a memory block of audio data and return a key for it. To keep the code smaller we'll make it single-channel only.
+
+To keep the exaple shorter we'll also be using the ugly and unsafe `void*` to pass the Keyfinder data around instead of using an opaque struct.
 
 
 ```cpp
 
+// This is a shared instance that contains functions & data used by all instances of
+// a keyfinder object is used read-only
 static KeyFinder::KeyFinder kfwrapper_shared_keyfinder;
 
 // creates a new instance of the keyfinder state
@@ -390,6 +394,8 @@ void kfwrapper__destroy_audio_data(void* key_finder) {
     delete ((KeyFinder::AudioData*)key_finder);
 }
 
+
+// The main processing function: takes a bunch of samples and adds it to the keyfinder audiodata
 extern "C"
 void kfwrapper__add_to_samples(void* audio_data,const float* data, uint64_t data_size) {
     auto a = (KeyFinder::AudioData*)audio_data;
@@ -401,18 +407,42 @@ void kfwrapper__add_to_samples(void* audio_data,const float* data, uint64_t data
     }
 }
 
+// After all samples are added we can use this function to get the key from LibKeyFinder
 extern "C"
-int kfwrapper__key_of_audio(void* audio_data) {
+int32_t kfwrapper__key_of_audio(void* audio_data) {
     auto a = (KeyFinder::AudioData*)audio_data;
 
-    KeyFinder::key_t key = k.keyOfAudio(a);
-    return (int)key;
+    KeyFinder::key_t key = kfwrapper_shared_keyfinder.keyOfAudio(a);
+    return (int32_t)key;
 }
 
 ```
 
+Now that we have the C functions themselves we need to wrap them on the rust side
 
-TODO: detail rust side of the C functions
+
+
+```rust
+// use a type alias so we can change this later for opaque struct
+type KeyFinderAudioDataPtr = *mut ::libc::c_void;
+
+extern "C" {
+
+    // intializer for the audio data
+    pub fn kfwrapper__init_audio_data(frame_rate: u32) -> KeyFinderAudioDataPtr;
+
+    // destructor for the audio data
+    pub fn kfwrapper__destroy_audio_data(audio_data: KeyFinderAudioDataPtr);
+
+    // add a number of samples to the audio data
+    pub fn kfwrapper__add_to_samples(audio_data: KeyFinderAudioDataPtr, data: *const f32, data_size: u64 );
+
+    // returns the current key of the audio data
+    pub fn kfwrapper__key_of_audio(audio_data: KeyFinderAudioDataPtr) -> i32;
+
+}
+
+```
 
 
 The KeyFinder `constants.h` gives us the list of key values so we can parse them:
@@ -455,7 +485,76 @@ impl SongKey {
 
 ```
 
-TODO:
+We can now inject the LibKeyFinder calls into our `process_mp3_file()` function:
+
+- initialize a new audiodata at the start
+- for each packet of samples: add the
+
+
+First let's create the audio data -- we'll need to find the sample rate to do this, which comes from the `track` object we've gotten after opening the audio file.
+
+To ensure that the audio data is properly disposed of on scope exit we'll use the Go-style `defer!` from the `scopeguard` crate.
+
+
+```toml
+[dependencies]
+scopeguard = "1.1.0"
+```
+
+```rust
+// after we have the `track` from the audio file  figure out the sample rate
+let track = ...;
+
+// find the sample rate
+let sample_rate = match track.codec_params.sample_rate {
+    Some(rate) => rate,
+    None => {
+        panic!("Cannot find sample rate for track")
+    },
+};
+
+// create audio data from samplerate
+let audio_data = unsafe { kfwrapper__init_audio_data(sample_rate) };
+defer! {
+    unsafe { kfwrapper__destroy_audio_data(audio_data) }
+}
+```
+
+To add the individual samples we'll add to the decoding loop:
+
+```rust
+// the decoding loop starts here
+let planes = buf.planes();
+
+// check if we have audio channels
+if planes.planes().len() == 0 {
+    print!("No audio channles available");
+    return None;
+}
+
+// use the first channel only (as we are mono)
+let plane = planes.planes()[0];
+
+// add the data from the channel to the keyfinder audio data
+unsafe {
+    kfwrapper__add_to_samples(
+        audio_data,
+        plane.as_ptr(),
+        plane.len().try_into().unwrap()
+    )
+};
+
+// update the song key
+let int_song_key = unsafe { kfwrapper__key_of_audio(audio_data) };
+let song_key = SongKey::from_key_t(int_song_key);
+
+// update the song key in the returned meta instance
+song_meta.key = song_key;
+```
+
+
+This completes our `process_mp3_file()` function.
+
 
 
 ### Package up the data and send it to Algolia
@@ -504,10 +603,9 @@ pub struct SongMeta {
 And update it along the per-packet update in the audio data reader function:
 
 ```rust
-// TODO: update the song key from the libkeyfinder instance
-let song_key = key_finder.key_of_audio(key_finder_audio_data);
-
+// we assign the song key here
 song_meta.key = song_key;
+// ADD the new circle-of-fifths key
 song_meta.cof_key = song_key.to_circle_of_fifths();
 ```
 
