@@ -1,8 +1,7 @@
-use serde::{Serialize};
+use serde::Serialize;
 
 #[macro_use(defer)]
 extern crate scopeguard;
-
 
 pub struct KeyFinder {
     // TODO: state goes here
@@ -10,17 +9,16 @@ pub struct KeyFinder {
 
 impl KeyFinder {
     pub fn new() -> Self {
-        KeyFinder {  }
+        KeyFinder {}
     }
 
-    pub fn set_frame_rate(&mut self, _frame_rate:u32 ) {
-
-    }
-
+    pub fn set_frame_rate(&mut self, _frame_rate: u32) {}
 }
 
 // use a type alias so we can change this later for opaque struct
 type KeyFinderAudioDataPtr = *mut ::libc::c_void;
+
+/*
 
 extern "C" {
 
@@ -36,6 +34,27 @@ extern "C" {
     // returns the current key of the audio data
     pub fn kfwrapper__key_of_audio(audio_data: KeyFinderAudioDataPtr) -> i32;
 
+}
+*/
+// intializer for the audio data
+pub fn kfwrapper__init_audio_data(frame_rate: u32) -> KeyFinderAudioDataPtr {
+    std::ptr::null_mut()
+}
+
+// destructor for the audio data
+pub fn kfwrapper__destroy_audio_data(audio_data: KeyFinderAudioDataPtr) {}
+
+// add a number of samples to the audio data
+pub fn kfwrapper__add_to_samples(
+    audio_data: KeyFinderAudioDataPtr,
+    data: *const f32,
+    data_size: u64,
+) {
+}
+
+// returns the current key of the audio data
+pub fn kfwrapper__key_of_audio(audio_data: KeyFinderAudioDataPtr) -> i32 {
+    1
 }
 
 /*
@@ -60,7 +79,6 @@ for (int i = 0; i < yourAudioStream.length; i++) {
 KeyFinder::key_t key = k.keyOfAudio(a);
 
 */
-
 
 #[derive(Serialize, Debug, Copy, Clone)]
 pub enum SongKey {
@@ -91,13 +109,11 @@ pub enum SongKey {
     BMin,
 
     Unknown,
-
-
 }
 
 impl SongKey {
     // Converts a LibKeyFinder key_t into a SongKey
-    pub fn from_key_t(i:i32) -> SongKey {
+    pub fn from_key_t(i: i32) -> SongKey {
         match i {
             0 => SongKey::AMaj,
             1 => SongKey::AMin,
@@ -110,7 +126,6 @@ impl SongKey {
 
             6 => SongKey::CMaj,
             7 => SongKey::CMin,
-
 
             8 => SongKey::DfMaj,
             9 => SongKey::DfMin,
@@ -184,8 +199,6 @@ impl SongKey {
     }
 }
 
-
-
 #[derive(Serialize, Debug)]
 pub struct SongMeta {
     pub path: String,
@@ -197,12 +210,7 @@ pub struct SongMeta {
     pub cof_key: String,
 }
 
-
-
-
 fn process_mp3_file(path: &str) -> Option<SongMeta> {
-
-
     use symphonia::core::codecs::{DecoderOptions, CODEC_TYPE_NULL};
     use symphonia::core::errors::Error;
     use symphonia::core::formats::FormatOptions;
@@ -246,7 +254,7 @@ fn process_mp3_file(path: &str) -> Option<SongMeta> {
         Some(rate) => rate,
         None => {
             panic!("Cannot find sample rate for track")
-        },
+        }
     };
 
     // create audio data from samplerate
@@ -275,7 +283,7 @@ fn process_mp3_file(path: &str) -> Option<SongMeta> {
         title: String::from(""),
         key: SongKey::Unknown,
         cof_key: String::from("Unknown"),
-     };
+    };
 
     // The decode loop.
     loop {
@@ -332,14 +340,13 @@ fn process_mp3_file(path: &str) -> Option<SongMeta> {
 
                         // use the first channel only (as we are mono)
                         let plane = planes.planes()[0];
-                        unsafe { kfwrapper__add_to_samples(
-                            audio_data,
-                            plane.as_ptr(),
-                            plane.len().try_into().unwrap()
-                        ) };
-
-
-
+                        unsafe {
+                            kfwrapper__add_to_samples(
+                                audio_data,
+                                plane.as_ptr(),
+                                plane.len().try_into().unwrap(),
+                            )
+                        };
 
                         // for plane in planes.planes() {
                         //     unsafe { kfwrapper__add_to_samples(
@@ -347,18 +354,17 @@ fn process_mp3_file(path: &str) -> Option<SongMeta> {
                         //         plane.as_ptr(),
                         //         plane.len().try_into().unwrap()
                         //     ) }
-                            // // TODO: We have the block of samples here one channel, send to libKeyfinder here
-                            // for &_sample in plane.iter() {
+                        // // TODO: We have the block of samples here one channel, send to libKeyfinder here
+                        // for &_sample in plane.iter() {
 
-                            //     // Do something with `sample`.
-                            // }
+                        //     // Do something with `sample`.
+                        // }
                         // }
 
                         // TODO: update the song key from the libkeyfinder instance
                         // let song_key = SongKey::Unknown;
                         let int_song_key = unsafe { kfwrapper__key_of_audio(audio_data) };
                         let song_key = SongKey::from_key_t(int_song_key);
-
 
                         song_meta.key = song_key;
                         song_meta.cof_key = song_key.to_circle_of_fifths();
@@ -385,16 +391,34 @@ fn process_mp3_file(path: &str) -> Option<SongMeta> {
     }
 }
 
+use clap::Parser;
 
+/// Simple program to greet a person
+#[derive(Parser, Debug)]
+#[command(author, version, about, long_about = None)]
+struct Args {
+    file_name: Vec<String>,
+    // algolia credentials
+    #[arg(long)]
+    app_id: String,
+    #[arg(long)]
+    api_key: String,
+
+    // index to target
+    #[arg(short, long)]
+    index_name: String,
+}
 
 fn main() {
+    let args = Args::parse();
 
-    let args: Vec<String> = std::env::args().collect();
+    // let args: Vec<String> = std::env::args().collect();
 
-    let song_meta = process_mp3_file(&args[1]);
-
+    for filename in args.file_name {
+        let song_meta = process_mp3_file(&filename);
+        print!("Song meta: {:?}\n ", song_meta)
+    }
 
     // let song_meta = process_mp3_file("/Users/gyulalaszlo/Music/Reaper Projects/set_preparation/dj-2022-09-08/songs/13-shelter97-156bpm.mp3");
 
-    print!("Song meta: {:?}\n ", song_meta)
 }

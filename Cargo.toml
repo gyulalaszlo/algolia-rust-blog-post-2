@@ -16,3 +16,4 @@ serde_json = { version = "1.0" }
 urlencoding = { version = "2.1" }
 libc = "0.2"
 scopeguard = "1.1.0"
+clap = { version = "4.0.24", features = ["derive"] }

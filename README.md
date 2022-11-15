@@ -649,8 +649,71 @@ cargo run -- "Sonny Coca-Crooks.mp3"
 
 ## Creating a CLI client
 
-TODO: implement wrapper around search API (with filtering for compatible keys)
 
+### Indexing
+
+To implement a simple command-line tool for indexing and searching we'll use the [clap](https://docs.rs/clap) library to parse the command line.
+
+```toml
+[dependencies]
+clap = { version = "4.0.24", features = ["derive"] }
+```
+
+This library requires us to create a struct that describes our expected arguments. For our initial version we'll process some mp3 files and upload the processing results to Algolia. To do this we'll require the following arguments:
+
+- one or more filenames for the mp3 files
+- Algolia credentials (`APP_ID` and `API_KEY`)
+- the Algolia index to push the data to
+
+The initial implementation of this is fairly straightforward: we define the structure and loop through the files adding the song metadata one-by-one then sending the results
+
+```rust
+use clap::Parser;
+
+/// Simple program to greet a person
+#[derive(Parser, Debug)]
+#[command(author, version, about, long_about = None)]
+struct Args {
+    // a list of filenames
+    file_name: Vec<String>,
+    // algolia credentials
+    #[arg(long)]
+    app_id: String,
+    #[arg(long)]
+    api_key: String,
+
+    // index to target
+    #[arg(short, long)]
+    index_name: String,
+}
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // parse the arguments
+    let args = Args::parse();
+
+    // Create the sender from the credentials
+    let mut sender = AlgoliaSender::new(args.app_id, args.api_key, args.index_name);
+
+    for filename in args.file_name {
+        let song_meta = process_mp3_file(&filename);
+        print!("Song meta: {:?}\n ", song_meta)
+
+        // add the metadata to the send objects list
+        sender.add_item(song_meta);
+    }
+
+
+    // send the data
+    sender.send_items();
+
+    return Ok(());
+}
+
+```
+
+### Searching
+
+TODO: implement wrapper around search API (with filtering for compatible keys)
 
 
 ## Creating a web UI for the same database
