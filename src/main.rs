@@ -197,6 +197,50 @@ impl SongKey {
             Self::Unknown => "Unknown",
         })
     }
+
+    // returns a list of compatible keys
+    // TODO: fill this matrix
+    pub fn compatible_keys(&self) -> Vec<SongKey> {
+        match self {
+            Self::AMaj => vec![],
+            Self::AMin => vec![SongKey::CMaj, SongKey::AMin, SongKey::DMin, SongKey::FMaj, SongKey::EMin, SongKey::GMaj],
+
+            Self::BfMaj => vec![],
+            Self::BfMin => vec![],
+
+            Self::BMaj => vec![],
+            Self::BMin => vec![],
+
+            Self::CMaj => vec![],
+            Self::CMin => vec![],
+
+            Self::DfMaj => vec![],
+            Self::DfMin => vec![],
+
+            Self::DMaj => vec![],
+            Self::DMin => vec![],
+
+            Self::EfMaj => vec![],
+            Self::EfMin => vec![],
+
+            Self::EMaj => vec![],
+            Self::EMin => vec![],
+
+            Self::FMaj => vec![],
+            Self::FMin => vec![],
+
+            Self::GfMaj => vec![],
+            Self::GfMin => vec![],
+
+            Self::GMaj => vec![],
+            Self::GMin => vec![],
+
+            Self::AfMaj => vec![],
+            Self::AfMin => vec![],
+
+            Self::Unknown => vec![],
+        }
+    }
 }
 
 #[derive(Serialize, Debug)]
@@ -391,6 +435,59 @@ fn process_mp3_file(path: &str) -> Option<SongMeta> {
     }
 }
 
+// SEARCH THINGS
+// -------------
+
+// The reqwest client type used by the library
+type ClientType = reqwest::blocking::Client;
+
+// Searches for a song with a compatible key to the specified one
+pub fn search_algolia_for_song_by_key(app_id: &str, api_key: &str, index_name: &str, key: SongKey) {
+    use url::form_urlencoded::{byte_serialize, parse};
+
+    // encode user data for URLs
+    fn url_encode(s:&str) -> String {
+        byte_serialize(s.as_bytes()).collect()
+    }
+
+    fn build_filter_value(keys: &Vec<SongKey>) -> String {
+        let keys_strings : Vec<String> = keys.iter().map(|key| { format!("cof_key:\"{}\"", key.to_circle_of_fifths()) }).collect();
+        keys_strings.join(" OR ")
+    }
+
+    fn build_query_string(query: &str, keys: &Vec<SongKey>) -> String {
+        let filter_str = format!("filter={}", url_encode(build_filter_value(keys).as_str()));
+
+        match query {
+            "" => filter_str,
+            s => format!("query={}&{}", url_encode(s), filter_str),
+        }
+    }
+
+    let client = ClientType::new();
+    // let filter_value = build_filter_value(&key.compatible_keys());
+    // let filter_string = format!("?filters={}", byte_serialize(filter_value.as_bytes()).collect::<String>());
+    let url = format!(
+        "https://{}-dsn.algolia.net/1/indexes/{}?{}",
+        app_id, index_name, build_query_string("crooks", &key.compatible_keys())
+    );
+
+    print!("ALGOLIA URL:{}\n", url);
+    // let uri_with_client = format!("{}?x-algolia-agent={}", uri, ALGOLIA_AGENT);
+
+    let res = client
+        .get(url)
+        // .post(uri_with_client)
+        .header("x-algolia-api-key", api_key)
+        .header("x-algolia-application-id", app_id)
+        // .body(data)
+        // .send();
+        ;
+
+
+}
+
+///
 use clap::Parser;
 
 /// Simple program to greet a person
@@ -412,13 +509,22 @@ struct Args {
 fn main() {
     let args = Args::parse();
 
+    search_algolia_for_song_by_key(&args.app_id, &args.api_key, &args.index_name, SongKey::AMin);
+
+    panic!("Stop");
+
     // let args: Vec<String> = std::env::args().collect();
 
     for filename in args.file_name {
-        let song_meta = process_mp3_file(&filename);
-        print!("Song meta: {:?}\n ", song_meta)
+        let song_meta_value = process_mp3_file(&filename);
+        match song_meta_value {
+            None => {},
+            Some(song_meta) => {
+                print!("Song meta: {:?}\n {}\n", song_meta,         serde_json::to_string_pretty(&song_meta).unwrap());
+            },
+        }
+        // serde_json::to_string_pretty(&song_meta);
     }
 
     // let song_meta = process_mp3_file("/Users/gyulalaszlo/Music/Reaper Projects/set_preparation/dj-2022-09-08/songs/13-shelter97-156bpm.mp3");
-
 }

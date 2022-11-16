@@ -713,7 +713,128 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ### Searching
 
-TODO: implement wrapper around search API (with filtering for compatible keys)
+We'll implement searching using the [Alogila Search REST API](https://www.algolia.com/doc/rest-api/search/).
+
+The process of searching for songs compatible with a key needs the following steps:
+
+- figure out the list of compatible keys for the key provided by the user
+- build an Algolia query that combines these compatible keys with filtering and add a query string if the user provided one
+- send the request to Algolia to our index
+- parse the results and display to the user
+
+#### Compatible keys
+
+First let's add a `compatible_keys()` function to the `SongKey` structure to have the list of compatible keys available:
+
+```rust
+
+impl SongKey {
+
+    // returns a list of compatible keys
+    // TODO: fill this matrix
+    pub fn compatible_keys(&self) -> Vec<SongKey> {
+        match self {
+            // ...
+            Self::AMin => vec![Self::CMaj, Self::AMin, Self::DMin, Self::FMaj, Self::EMin, Self::GMaj],
+            // ...
+            Self::Unknown => vec![Self::Unknown],
+        }
+    }
+}
+```
+
+#### Building an Algolia Query
+
+Using the [filtering documentation](https://www.algolia.com/doc/api-reference/api-parameters/filters/) we can create a simple function that builds us a query for a list of keys.
+
+We'll need to URL-encode the user query string and the filtering expression, so we'll need to use the `url` crate:
+
+```toml
+[dependencies]
+url = { version = "2.3.1" }
+```
+
+The following three functions build up the URL parameter string:
+
+```rust
+// encode user data for URLs
+fn url_encode(s:&str) -> String {
+    byte_serialize(s.as_bytes()).collect()
+}
+
+// concatenate a list of keys into a filter string
+fn build_filter_value(keys: &Vec<SongKey>) -> String {
+    let keys_strings : Vec<String> = keys.iter().map(|key| { format!("cof_key:\"{}\"", key.to_circle_of_fifths()) }).collect();
+    keys_strings.join(" OR ")
+}
+
+// build the query string for the REST API
+fn build_query_string(query: &str, keys: &Vec<SongKey>) -> String {
+    let filter_str = format!("filter={}", url_encode(build_filter_value(keys).as_str()));
+
+    match query {
+        "" => filter_str,
+        s => format!("query={}&{}", url_encode(s), filter_str),
+    }
+}
+
+```
+
+
+TODO: talk about enabling `cof_key` for faceting
+
+#### Sending the data to Algolia
+
+To send the search request we have two options: sending as a POST or as a GET request -- POST is recommended for in-browser usage (where CORS and OPTION preflight requests are present), but since we are using the HTTP transport directly, GET is also equally optimal.
+
+The documentation shows us the correct URL to target (`/1/indexes/<index>`), and this endpoint uses the same auth headers as the publishing endpoint, so we can copy-paste the basics from there
+
+
+```rust
+// The reqwest client type used by the library
+type ClientType = reqwest::blocking::Client;
+
+// Searches for a song with a compatible key to the specified one
+pub fn search_algolia_for_song_by_key(app_id: &str, api_key: &str, index_name: &str, key: SongKey) {
+    use url::form_urlencoded::{byte_serialize, parse};
+
+    // encode user data for URLs
+    fn url_encode(s:&str) -> String { /* ... */ }
+
+    fn build_filter_value(keys: &Vec<SongKey>) -> String { /* ... */ }
+
+    fn build_query_string(query: &str, keys: &Vec<SongKey>) -> String {/* ... */ }
+
+
+    // build the full URL to query
+    let url = format!(
+        "https://{}-dsn.algolia.net/1/indexes/{}?{}",
+        app_id, index_name, build_query_string("crooks", &key.compatible_keys())
+    );
+
+    // Send the HTTP request
+    let res = ClientType::new()
+        .get(url)
+        .header("x-algolia-api-key", api_key)
+        .header("x-algolia-application-id", app_id)
+        .send();
+        ;
+
+    // Result processing comes here
+
+}
+
+```
+
+
+#### Parsing the results and displaying to the user
+
+TODO: create return types and display code
+
+
+#### Integrating into the CLI (subcommands)
+
+TODO: create the `index` and `find` subcommands for the two operations
 
 
 ## Creating a web UI for the same database
