@@ -795,7 +795,7 @@ The documentation shows us the correct URL to target (`/1/indexes/<index>`), and
 type ClientType = reqwest::blocking::Client;
 
 // Searches for a song with a compatible key to the specified one
-pub fn search_algolia_for_song_by_key(app_id: &str, api_key: &str, index_name: &str, key: SongKey) {
+pub fn search_algolia_for_song_by_key(app_id: &str, api_key: &str, index_name: &str, key: SongKey, user_query: &str) {
     use url::form_urlencoded::{byte_serialize, parse};
 
     // encode user data for URLs
@@ -809,7 +809,7 @@ pub fn search_algolia_for_song_by_key(app_id: &str, api_key: &str, index_name: &
     // build the full URL to query
     let url = format!(
         "https://{}-dsn.algolia.net/1/indexes/{}?{}",
-        app_id, index_name, build_query_string("crooks", &key.compatible_keys())
+        app_id, index_name, build_query_string(user_query, &key.compatible_keys())
     );
 
     // Send the HTTP request
@@ -829,15 +829,362 @@ pub fn search_algolia_for_song_by_key(app_id: &str, api_key: &str, index_name: &
 
 #### Parsing the results and displaying to the user
 
-TODO: create return types and display code
+To decode the response and implement pagination for the results coming back from Algolia we'll need to first create a bunch of structures for the return values. I've used the Algolia Search REST API reference to implement the response structures.
+
+First we'll need a struct to describe the returned song metadata -- this structure differs from the one we're uploading (it has `objectID`), so we'll implement a new struct for it, and for ease of use
+
+```rust
+
+// The response for the songMeta type
+#[derive(Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct SongMetaResponse {
+    pub path: String,
+    pub artist: String,
+    pub title: String,
+    pub key: SongKey,
+
+    #[serde(rename="objectID")]
+    pub object_id: String,
+}
+
+// allow conversion of SongMetaResponse to SongMeta
+impl std::convert::From<&SongMetaResponse> for SongMeta {
+    fn from(s: &SongMetaResponse) -> Self {
+        SongMeta {
+            path: s.path.clone(),
+            artist: s.artist.clone(),
+            title: s.title.clone(),
+            key: s.key,
+            cof_key: s.key.to_circle_of_fifths(),
+        }
+    }
+}
+```
+
+
+We'll also need to implement the Algolia response wrapper to handle decoding and pagination of the data:
+
+```rust
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchResponse {
+    hits: Vec<SongMetaResponse>,
+    page: i32,
+
+    nb_hits: i32,
+    nb_pages: i32,
+
+    hits_per_page: i32,
+}
+```
+
+For convinience let's implement two helper functions for dealing with pagination later on:
+
+```rust
+
+impl SearchResponse {
+    // returns all SongMeta's in this response
+    pub fn get_song_meta_vec(&self) -> Vec<SongMeta> {
+        self.hits.iter().map(|r| r.to_song_meta()).collect()
+    }
+
+    // returns true if there are more pages after this one
+    pub fn has_more_pages(&self) -> bool {
+        (self.page + 1) < self.nb_pages
+    }
+}
+```
+
+
+Now that the response types are defined let's add the decoder and pagination to the search function. The main changes at this stage:
+
+- we are now returning a proper `Result` with either a list of `SongMeta` or a `String` as error
+- we add a pagination loop and add the current page to the request URL
+
+```rust
+pub fn search_algolia_for_song_by_key( app_id: &str, api_key: &str, index_name: &str, key: SongKey, user_query: &str) -> Result<Vec<SongMeta>, String> {
+    use url::form_urlencoded::{byte_serialize, parse};
+
+    // encode user data for URLs
+    fn url_encode(s:&str) -> String { /* ... */ }
+
+    fn build_filter_value(keys: &Vec<SongKey>) -> String { /* ... */ }
+
+    fn build_query_string(query: &str, keys: &Vec<SongKey>) -> String {/* ... */ }
+
+    // helper that attempts to decode the response data and fails with a nice String error
+    fn decode_search_response(data: &[u8]) -> Result<SearchResponse, String> {
+        match serde_json::from_slice(data) {
+            Ok(response) => Ok(response),
+            Err(e) => Err(format!("while decoding response: {}", e.to_string())),
+        }
+    }
+
+
+
+    let client = ClientType::new();
+    let mut have_more = true;
+    let mut page = 0;
+    let mut song_meta_vec: Vec<SongMeta> = vec![];
+
+    while have_more {
+        // build the URL
+        let url = format!(
+            "https://{}-dsn.algolia.net/1/indexes/{}?{}&page={}",
+            app_id,
+            index_name,
+            build_query_string(user_query, &key.compatible_keys()),
+            page.to_string()
+        );
+
+        print!("FETCHING ALGOLIA URL:{}\n", url);
+
+        // send the request
+        let res = client
+            .get(url)
+            .header("x-algolia-api-key", api_key)
+            .header("x-algolia-application-id", app_id)
+            .send();
+
+        match res {
+            // Handle response here
+        }
+
+    };
+
+    // return the collected song metadata list
+    Ok(song_meta_vec)
+}
+```
+
+Handling the response at this point is simply attempting to decode it, extract and collect the `SongMeta` and potentially go to the next page if there are any left:
+
+```rust
+match res {
+    // request error
+    Err(e) => return Err(format!("while fetching algolia data: {}", e.to_string())),
+    // request ok
+    Ok(response) => match response.bytes() {
+        // read error
+        Err(e) => return Err(format!("while reading Algolia response: {}", e.to_string())),
+        // read ok
+        Ok(bytes) => match decode_search_response(&bytes) {
+            // decode error
+            Err(e) => {
+                return Err(format!(
+                    "while decoding Algolia response: {}",
+                    e.to_string()
+                ))
+            }
+            // decode ok
+            Ok(search_response) => {
+                song_meta_vec.append(&mut search_response.get_song_meta_vec());
+                have_more = search_response.has_more_pages();
+                page += 1;
+            }
+        },
+    },
+};
+```
+
+And to display this for the users let's add a quick'n'dirty function that just prints a tab-separated table to stdout:
+
+```rust
+fn print_search_results(results: &Vec<SongMeta>) {
+    print!("Artist\tTitle\tKey\tPath\n");
+    for result in results {
+        print!(
+            "{}\t{}\t{}\t{}\n",
+            result.artist,
+            result.title,
+            result.key.to_circle_of_fifths(),
+            result.path
+        )
+    }
+}
+```
+
 
 
 #### Integrating into the CLI (subcommands)
 
-TODO: create the `index` and `find` subcommands for the two operations
+Now that we have both the indexing and the search functions implemented let's package both of these actions into a single CLI application (like `git <CMD>` or `cargo <CMD>`).
 
+CLAP provides support for this via the `clap::Subcommand` derive macro. Since Algolia credentials and the index name is required for operations, they are kept as shared between all commands.
+
+```rust
+#[derive(Parser, Debug)]
+#[command(author, version, about, long_about = None)]
+struct Args {
+    #[command(subcommand)]
+    command: Commands,
+
+    // algolia credentials
+    #[arg(long)]
+    app_id: String,
+    #[arg(long)]
+    api_key: String,
+
+    // index to target
+    #[arg(short, long)]
+    index_name: String,
+}
+
+// This enum represents the two sub-commands with their own argument list
+#[derive(Debug, clap::Subcommand)]
+enum Commands {
+    Index {
+        file_names: Vec<String>,
+    },
+    Search {
+        query: String,
+        #[arg(short, long, value_enum)]
+        key: SongKey,
+    },
+}
+
+```
+
+To allow getting a `SongKey` enum value from the command line we'll need to implement `std::convert::From<String>` on `SongKey`:
+
+```rust
+impl std::convert::From<String> for SongKey {
+    fn from(s: String) -> Self {
+        match s.to_lowercase().as_str() {
+            "AMaj" => SongKey::AMaj,
+            "AMin" => SongKey::AMin,
+            // ...
+            _ => SongKey::Unknown,
+        }
+    }
+}
+```
+
+
+With these new structures in place it's time to implement the final `main()` function:
+
+```rust
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let args = Args::parse();
+
+    match args.command {
+        Commands::Index { file_names } => {
+            // Create the sender from the credentials
+            let mut sender = AlgoliaSender::new(args.app_id, args.api_key, args.index_name);
+
+            for filename in file_names {
+                let song_meta = process_mp3_file(&filename);
+                print!("Song meta: {:?}\n ", song_meta);
+
+                // add the metadata to the send objects list
+                sender.add_item(song_meta);
+            }
+
+            // send the data
+            sender.send_items();
+            Ok(())
+        },
+        Commands::Search { query, key } => {
+            run_search(&args.app_id, &args.api_key, &args.index_name, key, &query);
+            Ok(())
+        }
+    }
+}
+```
+
+
+And now we can run both commands:
+
+```sh
+# Index some files
+cargo run -- --app-id APP_ID --api-key KEY --index-name INDEX_NAME index "mp3/Sonny Coca - Crooks.mp3" "mp3/Sonny Coca - Altered Factors.mp3"
+
+# Search for some song
+cargo run -- --app-id APP_ID --api-key KEY --index-name INDEX_NAME search "Sonny Coca" --key AMin
+```
 
 ## Creating a web UI for the same database
 
 
-TODO: implement WebUI
+Just like last time, we're simply going to copy the [InstantSearch getting started guide](https://www.algolia.com/doc/guides/building-search-ui/getting-started/js/) and modify it to fit our needs.
+
+We keep the most of the layout and HTML:
+
+```html
+<!DOCTYPE html>
+<html lang="en">
+  <!-- exact same <head> as in the demo -->
+  <body>
+    <div class="ais-InstantSearch">
+
+      <div class="left-panel">
+        <div id="clear-refinements"></div>
+
+        <!-- rename this from "Brands" to "Keys" -->
+        <h2>Keys</h2>
+        <div id="key-list"></div>
+      </div>
+
+      <!-- exact same <div class="right-panel"> as the in the demo -->
+    </div>
+
+    <!-- same <script> tags as in the demo -->
+  </body>
+</html>
+
+```
+
+The Javascript is also almost the same as the demo app, with minor changes to the display and the "Keys" quick-selector
+
+
+```js
+/* global instantsearch algoliasearch */
+
+const search = // ...same as the demo
+
+search.addWidgets([
+  instantsearch.widgets.searchBox({
+    container: '#searchbox',
+  }),
+  instantsearch.widgets.clearRefinements({
+    container: '#clear-refinements',
+  }),
+  // categories instead of brands
+  instantsearch.widgets.refinementList({
+    container: '#key-list',
+    attribute: 'key',
+  }),
+  // customize the hit display
+  instantsearch.widgets.hits({
+    container: '#hits',
+    templates: {
+      item: `
+        <div>
+
+          <a href="editor:goto:x:{{root.x}}:y:{{root.y}}:z:{{root.z}}">Open in editor</a>
+          <dl>
+            <!-- The attributes we're interested in -->
+            <dt>Artist</dt>
+            <dd>{{#helpers.highlight}}{ "attribute": "artist" }{{/helpers.highlight}}</dd>
+
+            <dt>Title</dt>
+            <dd>{{#helpers.highlight}}{ "attribute": "title" }{{/helpers.highlight}}</dd>
+
+            <dt>Key</dt>
+            <dd>{{#helpers.highlight}}{ "attribute": "key" }{{/helpers.highlight}}</dd>
+            <!-- ... other attributes -->
+
+          </dl>
+        </div>
+      `,
+    },
+  }),
+  instantsearch.widgets.pagination({
+    container: '#pagination',
+  }),
+]);
+
+search.start();
+```

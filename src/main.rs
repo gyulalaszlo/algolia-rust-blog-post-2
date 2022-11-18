@@ -1,4 +1,4 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 #[macro_use(defer)]
 extern crate scopeguard;
@@ -80,7 +80,7 @@ KeyFinder::key_t key = k.keyOfAudio(a);
 
 */
 
-#[derive(Serialize, Debug, Copy, Clone)]
+#[derive(Serialize, Deserialize, Debug, Copy, Clone)]
 pub enum SongKey {
     CMaj,
     DfMaj,
@@ -109,6 +109,50 @@ pub enum SongKey {
     BMin,
 
     Unknown,
+}
+
+impl std::convert::From<String> for SongKey {
+    fn from(s: String) -> Self {
+        match s.to_lowercase().as_str() {
+            "AMaj" => SongKey::AMaj,
+            "AMin" => SongKey::AMin,
+
+            "BfMaj" => SongKey::BfMaj,
+            "BfMin" => SongKey::BfMin,
+
+            "BMaj" => SongKey::BMaj,
+            "BMin" => SongKey::BMin,
+
+            "CMaj" => SongKey::CMaj,
+            "CMin" => SongKey::CMin,
+
+            "DfMaj" => SongKey::DfMaj,
+            "DfMin" => SongKey::DfMin,
+
+            "DMaj" => SongKey::DMaj,
+            "DMin" => SongKey::DMin,
+
+            "EfMaj" => SongKey::EfMaj,
+            "EfMin" => SongKey::EfMin,
+
+            "EMaj" => SongKey::EMaj,
+            "EMin" => SongKey::EMin,
+
+            "FMaj" => SongKey::FMaj,
+            "FMin" => SongKey::FMin,
+
+            "GfMaj" => SongKey::GfMaj,
+            "GfMin" => SongKey::GfMin,
+
+            "GMaj" => SongKey::GMaj,
+            "GMin" => SongKey::GMin,
+
+            "AfMaj" => SongKey::AfMaj,
+            "AfMin" => SongKey::AfMin,
+
+            _ => SongKey::Unknown,
+        }
+    }
 }
 
 impl SongKey {
@@ -203,7 +247,14 @@ impl SongKey {
     pub fn compatible_keys(&self) -> Vec<SongKey> {
         match self {
             Self::AMaj => vec![],
-            Self::AMin => vec![SongKey::CMaj, SongKey::AMin, SongKey::DMin, SongKey::FMaj, SongKey::EMin, SongKey::GMaj],
+            Self::AMin => vec![
+                SongKey::CMaj,
+                SongKey::AMin,
+                SongKey::DMin,
+                SongKey::FMaj,
+                SongKey::EMin,
+                SongKey::GMaj,
+            ],
 
             Self::BfMaj => vec![],
             Self::BfMin => vec![],
@@ -442,16 +493,19 @@ fn process_mp3_file(path: &str) -> Option<SongMeta> {
 type ClientType = reqwest::blocking::Client;
 
 // Searches for a song with a compatible key to the specified one
-pub fn search_algolia_for_song_by_key(app_id: &str, api_key: &str, index_name: &str, key: SongKey) {
-    use url::form_urlencoded::{byte_serialize, parse};
+pub fn search_algolia_for_song_by_key( app_id: &str, api_key: &str, index_name: &str, key: SongKey, user_query: &str) -> Result<Vec<SongMeta>, String> {
+    use url::form_urlencoded::{byte_serialize};
 
     // encode user data for URLs
-    fn url_encode(s:&str) -> String {
+    fn url_encode(s: &str) -> String {
         byte_serialize(s.as_bytes()).collect()
     }
 
     fn build_filter_value(keys: &Vec<SongKey>) -> String {
-        let keys_strings : Vec<String> = keys.iter().map(|key| { format!("cof_key:\"{}\"", key.to_circle_of_fifths()) }).collect();
+        let keys_strings: Vec<String> = keys
+            .iter()
+            .map(|key| format!("cof_key:\"{}\"", key.to_circle_of_fifths()))
+            .collect();
         keys_strings.join(" OR ")
     }
 
@@ -465,26 +519,110 @@ pub fn search_algolia_for_song_by_key(app_id: &str, api_key: &str, index_name: &
     }
 
     let client = ClientType::new();
-    // let filter_value = build_filter_value(&key.compatible_keys());
-    // let filter_string = format!("?filters={}", byte_serialize(filter_value.as_bytes()).collect::<String>());
-    let url = format!(
-        "https://{}-dsn.algolia.net/1/indexes/{}?{}",
-        app_id, index_name, build_query_string("crooks", &key.compatible_keys())
-    );
+    let mut have_more = true;
+    let mut page = 0;
+    let mut song_meta_vec: Vec<SongMeta> = vec![];
 
-    print!("ALGOLIA URL:{}\n", url);
-    // let uri_with_client = format!("{}?x-algolia-agent={}", uri, ALGOLIA_AGENT);
+    while have_more {
+        // build the URL
+        let url = format!(
+            "https://{}-dsn.algolia.net/1/indexes/{}?{}&page={}",
+            app_id,
+            index_name,
+            build_query_string(user_query, &key.compatible_keys()),
+            page.to_string()
+        );
 
-    let res = client
-        .get(url)
-        // .post(uri_with_client)
-        .header("x-algolia-api-key", api_key)
-        .header("x-algolia-application-id", app_id)
-        // .body(data)
-        // .send();
-        ;
+        print!("FETCHING ALGOLIA URL:{}\n", url);
 
+        // send the request
+        let res = client
+            .get(url)
+            .header("x-algolia-api-key", api_key)
+            .header("x-algolia-application-id", app_id)
+            .send();
 
+        match res {
+            Err(e) => return Err(format!("while fetching algolia data: {}", e.to_string())),
+            Ok(response) => match response.bytes() {
+                Err(e) => return Err(format!("while reading Algolia response: {}", e.to_string())),
+                Ok(bytes) => match decode_search_response(&bytes) {
+                    Err(e) => {
+                        return Err(format!(
+                            "while decoding Algolia response: {}",
+                            e.to_string()
+                        ))
+                    }
+                    Ok(search_response) => {
+                        song_meta_vec.append(&mut search_response.get_song_meta_vec());
+                        have_more = search_response.has_more_pages();
+                        page += 1;
+                    }
+                },
+            },
+        };
+    }
+
+    Ok(song_meta_vec)
+}
+
+// The response for the songMeta type
+#[derive(Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct SongMetaResponse {
+    pub path: String,
+    pub artist: String,
+    pub title: String,
+    pub key: SongKey,
+
+    #[serde(rename="objectID")]
+    pub object_id: String,
+}
+
+impl std::convert::From<&SongMetaResponse> for SongMeta {
+    fn from(s: &SongMetaResponse) -> Self {
+        SongMeta {
+            path: s.path.clone(),
+            artist: s.artist.clone(),
+            title: s.title.clone(),
+            key: s.key,
+            cof_key: s.key.to_circle_of_fifths(),
+        }
+    }
+}
+
+// impl SongMetaResponse {
+//     pub fn to_song_meta(&self) -> SongMeta {
+//         SongMeta {
+//             path: self.path.clone(),
+//             artist: self.artist.clone(),
+//             title: self.title.clone(),
+//             key: self.key,
+//             cof_key: self.key.to_circle_of_fifths(),
+//         }
+//     }
+// }
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchResponse {
+    hits: Vec<SongMetaResponse>,
+    page: i32,
+
+    nb_hits: i32,
+    nb_pages: i32,
+
+    hits_per_page: i32,
+}
+
+impl SearchResponse {
+    pub fn get_song_meta_vec(&self) -> Vec<SongMeta> {
+        self.hits.iter().map(|r| SongMeta::from(r)).collect()
+    }
+
+    pub fn has_more_pages(&self) -> bool {
+        (self.page + 1) < self.nb_pages
+    }
 }
 
 ///
@@ -494,7 +632,10 @@ use clap::Parser;
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct Args {
-    file_name: Vec<String>,
+    #[command(subcommand)]
+    command: Commands,
+
+    // file_name: Vec<String>,
     // algolia credentials
     #[arg(long)]
     app_id: String,
@@ -506,25 +647,164 @@ struct Args {
     index_name: String,
 }
 
-fn main() {
-    let args = Args::parse();
+#[derive(Debug, clap::Subcommand)]
+enum Commands {
+    Index {
+        file_names: Vec<String>,
+    },
+    Search {
+        query: String,
+        #[arg(short, long, value_enum)]
+        key: SongKey,
+    },
+}
 
-    search_algolia_for_song_by_key(&args.app_id, &args.api_key, &args.index_name, SongKey::AMin);
+const RESPONSE_EXAMPLE: &str = r#"
+{
+    "hits": [
+        {
+            "path": "/Users/gyulalaszlo/Music/Reaper Projects/set_preparation/dj-2022-09-08/songs/13-shelter97-156bpm.mp3",
+            "artist": "Artist A",
+            "title": "Title 1",
+            "key": "AMin",
+            "cof_key": "8A",
 
-    panic!("Stop");
-
-    // let args: Vec<String> = std::env::args().collect();
-
-    for filename in args.file_name {
-        let song_meta_value = process_mp3_file(&filename);
-        match song_meta_value {
-            None => {},
-            Some(song_meta) => {
-                print!("Song meta: {:?}\n {}\n", song_meta,         serde_json::to_string_pretty(&song_meta).unwrap());
+            "objectID": "2051967",
+            "_highlightResult": {
+                "name": {
+                    "value": "<em>George</em> <em>Clo</em>oney",
+                    "matchLevel": "full"
+                }
             },
+            "_snippetResult": {
+                "bio": {
+                    "value": "is the son of <em>George</em> <em>Clo</em>oney as was his father"
+                }
+            },
+            "_rankingInfo": {
+                "nbTypos": 0,
+                "firstMatchedWord": 0,
+                "proximityDistance": 1,
+                "userScore": 5,
+                "geoDistance": 0,
+                "geoPrecision": 1,
+                "nbExactWords": 0
+            }
+        },
+        {
+            "path": "/Users/gyulalaszlo/Music/Reaper Projects/set_preparation/dj-2022-09-08/songs/13-shelter97-156bpm.mp3",
+            "artist": "Artist B",
+            "title": "Title 2",
+            "key": "CMaj",
+            "cof_key": "8B",
+
+            "objectID": "825416",
+            "_highlightResult": {
+                "name": {
+                    "value": "<em>George</em> <em>Clo</em>oney's Irish Roots",
+                    "matchLevel": "full"
+                },
+                "year": {
+                    "value": "(2012 Documentary)",
+                    "matchLevel": "none"
+                }
+            },
+            "_rankingInfo": {
+                "nbTypos": 0,
+                "firstMatchedWord": 0,
+                "proximityDistance": 1,
+                "userScore": 4,
+                "geoDistance": 0,
+                "geoPrecision": 1,
+                "nbExactWords": 0
+            }
         }
-        // serde_json::to_string_pretty(&song_meta);
+    ],
+    "page": 0,
+    "nbHits": 38,
+    "nbPages": 19,
+    "hitsPerPage": 2,
+    "processingTimeMS": 6,
+    "query": "george clo",
+    "parsed_query": "george clo",
+    "params": "query=george%20clo&hitsPerPage=2&getRankingInfo=1"
+}
+"#;
+
+fn decode_search_response(data: &[u8]) -> Result<SearchResponse, String> {
+    match serde_json::from_slice(data) {
+        Ok(response) => Ok(response),
+        Err(e) => Err(format!("while decoding response: {}", e.to_string())),
+    }
+}
+
+fn print_search_results(results: &Vec<SongMeta>) {
+    print!("Artist\tTitle\tKey\tPath\n");
+    for result in results {
+        print!(
+            "{}\t{}\t{}\t{}\n",
+            result.artist,
+            result.title,
+            result.key.to_circle_of_fifths(),
+            result.path
+        )
+    }
+}
+
+fn run_search(app_id: &str, api_key: &str, index_name: &str, key: SongKey, query_string: &str) {
+    match search_algolia_for_song_by_key(app_id, api_key, index_name, key, query_string) {
+        Err(e) => {
+            print!("ERROR: {}", e);
+        }
+        Ok(results) => {
+            print!("---- RESULTS ----");
+            print_search_results(&results);
+        }
+    }
+}
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let args = Args::parse();
+    print!("ARGS: {:?}\n", args);
+
+    match decode_search_response(RESPONSE_EXAMPLE.as_bytes()) {
+        Err(e) => {
+            print!("ERROR: {}", e);
+        }
+        Ok(results) => {
+            print!(
+                "Decoded: {:?}\nHas More: {:?}",
+                results,
+                results.has_more_pages()
+            );
+            print_search_results(&results.get_song_meta_vec());
+        }
+    }
+    // panic!("Stop");
+
+    match args.command {
+        Commands::Index { file_names } => {
+            /*
+            // Create the sender from the credentials
+            let mut sender = AlgoliaSender::new(args.app_id, args.api_key, args.index_name);
+
+            for filename in file_names {
+                let song_meta = process_mp3_file(&filename);
+                print!("Song meta: {:?}\n ", song_meta);
+
+                // add the metadata to the send objects list
+                sender.add_item(song_meta);
+            }
+
+            // send the data
+            sender.send_items();
+            */
+            Ok(())
+        },
+        Commands::Search { query, key } => {
+            run_search(&args.app_id, &args.api_key, &args.index_name, key, &query);
+            Ok(())
+        }
     }
 
-    // let song_meta = process_mp3_file("/Users/gyulalaszlo/Music/Reaper Projects/set_preparation/dj-2022-09-08/songs/13-shelter97-156bpm.mp3");
 }

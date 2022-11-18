@@ -17,3 +17,4 @@ urlencoding = { version = "2.1" }
 libc = "0.2"
 scopeguard = "1.1.0"
 clap = { version = "4.0.24", features = ["derive"] }
+url = { version = "2.3.1" }
